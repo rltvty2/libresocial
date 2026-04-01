@@ -4,9 +4,9 @@ A decentralized, encrypted, ad-free, recommendation-algorithm-free social networ
 
 **Live instance:** [lsocial.org](https://lsocial.org)
 
-## Why LibreSocial?
+## Why LyndraSocial?
 
-On Bluesky, Mastodon, and Diaspora, instance operators can read every post, every DM, and every friend connection — it's all plaintext on the server. LibreSocial is fundamentally different: the server stores only ciphertext it cannot decrypt. A compromised or subpoenaed server reveals nothing.
+On Bluesky, Mastodon, and Diaspora, instance operators can read every post, every DM, and every friend connection — it's all plaintext on the server. LyndraSocial is fundamentally different: the server stores only ciphertext it cannot decrypt. A compromised or subpoenaed server reveals nothing.
 
 - Your posts are encrypted before they leave your browser
 - Your friends list is hidden from the server
@@ -85,8 +85,8 @@ On Bluesky, Mastodon, and Diaspora, instance operators can read every post, ever
 ### Setup
 
 ```bash
-git clone https://github.com/rltvty2/libresocial.git
-cd libresocial
+git clone https://github.com/rltvty2/lyndrasocial.git
+cd lyndrasocial
 npm install
 cp .env.example .env
 # Edit .env with your domain
@@ -106,22 +106,22 @@ npm start
 
 ### Running as a Service
 
-Create `/etc/systemd/system/libresocial.service`:
+Create `/etc/systemd/system/lyndrasocial.service`:
 
 ```ini
 [Unit]
-Description=LibreSocial
+Description=LyndraSocial
 After=network.target
 
 [Service]
-User=libresocial
-Group=libresocial
+User=lyndrasocial
+Group=lyndrasocial
 Type=simple
-WorkingDirectory=/opt/libresocial
+WorkingDirectory=/opt/lyndrasocial
 ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=5
-EnvironmentFile=/opt/libresocial/.env
+EnvironmentFile=/opt/lyndrasocial/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -130,10 +130,10 @@ WantedBy=multi-user.target
 Then:
 
 ```bash
-useradd -r -s /bin/false libresocial
-chown -R libresocial:libresocial /opt/libresocial
-systemctl enable libresocial
-systemctl start libresocial
+useradd -r -s /bin/false lyndrasocial
+chown -R lyndrasocial:lyndrasocial /opt/lyndrasocial
+systemctl enable lyndrasocial
+systemctl start lyndrasocial
 ```
 
 ### Reverse Proxy (Caddy)
