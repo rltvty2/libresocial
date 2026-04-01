@@ -1,4 +1,4 @@
-# LibreSocial
+# LyndraSocial
 
 A decentralized, encrypted, ad-free, recommendation-algorithm-free social network. The server cannot read your posts, your friends list, your messages, or even your username.
 
