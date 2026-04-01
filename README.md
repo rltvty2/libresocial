@@ -1,12 +1,12 @@
-# LyndraSocial
+# LiberaSocial
 
 A decentralized, encrypted, ad-free, recommendation-algorithm-free social network. The server cannot read your posts, your friends list, your messages, or even your username.
 
 **Live instance:** [lsocial.org](https://lsocial.org)
 
-## Why LyndraSocial?
+## Why LiberaSocial?
 
-On Bluesky, Mastodon, and Diaspora, instance operators can read every post, every DM, and every friend connection — it's all plaintext on the server. LyndraSocial is fundamentally different: the server stores only ciphertext it cannot decrypt. A compromised or subpoenaed server reveals nothing.
+On Bluesky, Mastodon, and Diaspora, instance operators can read every post, every DM, and every friend connection — it's all plaintext on the server. LiberaSocial is fundamentally different: the server stores only ciphertext it cannot decrypt. A compromised or subpoenaed server reveals nothing.
 
 - Your posts are encrypted before they leave your browser
 - Your friends list is hidden from the server
@@ -85,8 +85,8 @@ On Bluesky, Mastodon, and Diaspora, instance operators can read every post, ever
 ### Setup
 
 ```bash
-git clone https://github.com/rltvty2/lyndrasocial.git
-cd lyndrasocial
+git clone https://github.com/rltvty2/liberasocial.git
+cd liberasocial
 npm install
 cp .env.example .env
 # Edit .env with your domain
@@ -106,22 +106,22 @@ npm start
 
 ### Running as a Service
 
-Create `/etc/systemd/system/lyndrasocial.service`:
+Create `/etc/systemd/system/liberasocial.service`:
 
 ```ini
 [Unit]
-Description=LyndraSocial
+Description=LiberaSocial
 After=network.target
 
 [Service]
-User=lyndrasocial
-Group=lyndrasocial
+User=liberasocial
+Group=liberasocial
 Type=simple
-WorkingDirectory=/opt/lyndrasocial
+WorkingDirectory=/opt/liberasocial
 ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=5
-EnvironmentFile=/opt/lyndrasocial/.env
+EnvironmentFile=/opt/liberasocial/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -130,10 +130,10 @@ WantedBy=multi-user.target
 Then:
 
 ```bash
-useradd -r -s /bin/false lyndrasocial
-chown -R lyndrasocial:lyndrasocial /opt/lyndrasocial
-systemctl enable lyndrasocial
-systemctl start lyndrasocial
+useradd -r -s /bin/false liberasocial
+chown -R liberasocial:liberasocial /opt/liberasocial
+systemctl enable liberasocial
+systemctl start liberasocial
 ```
 
 ### Reverse Proxy (Caddy)
