@@ -135,6 +135,24 @@ export class UserStore {
     try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_fr_to_hash ON friend_requests(to_hash, status)') } catch {}
     try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_fr_from_hash ON friend_requests(from_hash)') } catch {}
 
+    // Migrate: group chats
+    try { this.db.exec(`CREATE TABLE IF NOT EXISTS group_chats (
+      id TEXT PRIMARY KEY, name_encrypted TEXT NOT NULL, name_iv TEXT NOT NULL,
+      creator TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`) } catch {}
+    try { this.db.exec(`CREATE TABLE IF NOT EXISTS group_members (
+      group_id TEXT NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
+      username TEXT NOT NULL, encrypted_key TEXT NOT NULL, key_iv TEXT NOT NULL,
+      added_at INTEGER NOT NULL, PRIMARY KEY (group_id, username)
+    )`) } catch {}
+    try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members(username)') } catch {}
+    try { this.db.exec(`CREATE TABLE IF NOT EXISTS group_messages (
+      id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES group_chats(id) ON DELETE CASCADE,
+      from_user TEXT NOT NULL, encrypted_content TEXT NOT NULL, iv TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`) } catch {}
+    try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_gmsg_group ON group_messages(group_id, created_at)') } catch {}
+
     this._stmts = {
       create: this.db.prepare(`INSERT INTO users (username,domain,display_name,signing_key,encryption_key,profile_cid,fingerprint,feed_key_version,quota_used,quota_limit,created_at,updated_at,username_hash) VALUES (@username,@domain,@displayName,@signingPublicKey,@encryptionPublicKey,@profileCid,@fingerprint,@feedKeyVersion,@quotaUsed,@quotaLimit,@createdAt,@updatedAt,@usernameHash)`),
       getByUsername: this.db.prepare('SELECT * FROM users WHERE username = ?'),
@@ -528,6 +546,62 @@ export class UserStore {
     this.db.prepare('DELETE FROM posts WHERE id = ?').run(postId)
     // Delete content blob if exists
     return post.content_hash
+  }
+
+  // ── Group Chats ──
+
+  async createGroupChat(id, nameEncrypted, nameIv, creator, members) {
+    const now = Date.now()
+    this.db.prepare('INSERT INTO group_chats (id, name_encrypted, name_iv, creator, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, nameEncrypted, nameIv, creator, now, now)
+    const insertMember = this.db.prepare('INSERT INTO group_members (group_id, username, encrypted_key, key_iv, added_at) VALUES (?, ?, ?, ?, ?)')
+    for (const m of members) {
+      insertMember.run(id, m.username, m.encryptedKey, m.keyIv, now)
+    }
+    return id
+  }
+
+  async getGroupsForUser(username) {
+    return this.db.prepare(`
+      SELECT g.*, gm.encrypted_key, gm.key_iv FROM group_chats g
+      JOIN group_members gm ON g.id = gm.group_id
+      WHERE gm.username = ? ORDER BY g.updated_at DESC
+    `).all(username)
+  }
+
+  async getGroupChat(groupId) {
+    return this.db.prepare('SELECT * FROM group_chats WHERE id = ?').get(groupId)
+  }
+
+  async getGroupMembers(groupId) {
+    return this.db.prepare('SELECT * FROM group_members WHERE group_id = ?').all(groupId)
+  }
+
+  async isGroupMember(groupId, username) {
+    return !!this.db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND username = ?').get(groupId, username)
+  }
+
+  async addGroupMembers(groupId, members) {
+    const now = Date.now()
+    const insert = this.db.prepare('INSERT OR IGNORE INTO group_members (group_id, username, encrypted_key, key_iv, added_at) VALUES (?, ?, ?, ?, ?)')
+    for (const m of members) insert.run(groupId, m.username, m.encryptedKey, m.keyIv, now)
+    this.db.prepare('UPDATE group_chats SET updated_at = ? WHERE id = ?').run(now, groupId)
+  }
+
+  async addGroupMessage(id, groupId, fromUser, encryptedContent, iv) {
+    const now = Date.now()
+    this.db.prepare('INSERT INTO group_messages (id, group_id, from_user, encrypted_content, iv, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, groupId, fromUser, encryptedContent, iv, now)
+    this.db.prepare('UPDATE group_chats SET updated_at = ? WHERE id = ?').run(now, groupId)
+    return id
+  }
+
+  async getGroupMessages(groupId, before = Date.now(), limit = 50) {
+    return this.db.prepare(
+      'SELECT * FROM group_messages WHERE group_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?'
+    ).all(groupId, before, limit).reverse()
+  }
+
+  async getGroupMemberKey(groupId, username) {
+    return this.db.prepare('SELECT encrypted_key, key_iv FROM group_members WHERE group_id = ? AND username = ?').get(groupId, username)
   }
 
   // ── Friend Requests ──
