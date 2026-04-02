@@ -361,11 +361,13 @@ async function buildVaultHashCache() {
 // ============================================================================
 // ECDH feed key exchange
 // ============================================================================
-async function encryptFeedKeyForFriend(myFeedKeyB64, myEncPrivateKey, friendEncPubKeyB64, displayName, photoHash, fullPhotoHash, username) {
+async function encryptFeedKeyForFriend(myFeedKeyB64, myEncPrivateKey, friendEncPubKeyB64, displayName, photoHash, fullPhotoHash, username, previousFeedKeys) {
   const friendPub = await crypto.subtle.importKey("raw", fromB64(friendEncPubKeyB64), { name: "ECDH", namedCurve: "P-256" }, false, []);
   const shared = await crypto.subtle.deriveKey({ name: "ECDH", public: friendPub }, myEncPrivateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const payload = JSON.stringify({ feedKey: myFeedKeyB64, displayName: displayName || null, photoHash: photoHash || null, fullPhotoHash: fullPhotoHash || null, username: username || null });
+  const payloadObj = { feedKey: myFeedKeyB64, displayName: displayName || null, photoHash: photoHash || null, fullPhotoHash: fullPhotoHash || null, username: username || null };
+  if (previousFeedKeys?.length) payloadObj.previousFeedKeys = previousFeedKeys.map(k => typeof k === "string" ? k : k.feedKeyB64);
+  const payload = JSON.stringify(payloadObj);
   const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, shared, enc.encode(payload));
   return JSON.stringify({ ct: toB64(new Uint8Array(ct)), iv: toB64(iv) });
 }
@@ -379,7 +381,7 @@ async function decryptFeedKeyFromFriend(encryptedPayload, myEncPrivateKey, frien
     const decoded = dec.decode(plain);
     try {
       const parsed = JSON.parse(decoded);
-      if (parsed.feedKey) return { feedKeyB64: parsed.feedKey, displayName: parsed.displayName || null, photoHash: parsed.photoHash || null, fullPhotoHash: parsed.fullPhotoHash || null, username: parsed.username || null };
+      if (parsed.feedKey) return { feedKeyB64: parsed.feedKey, displayName: parsed.displayName || null, photoHash: parsed.photoHash || null, fullPhotoHash: parsed.fullPhotoHash || null, username: parsed.username || null, previousFeedKeys: parsed.previousFeedKeys || null };
     } catch {}
     return { feedKeyB64: toB64(new Uint8Array(plain)), displayName: null, photoHash: null, fullPhotoHash: null, username: null };
   } catch (err) { console.error("[key-exchange] Decrypt failed:", err); return null; }
@@ -710,6 +712,15 @@ async function processKeyExchanges() {
             vault.friends[addr].previousFeedKeyB64 = existing.feedKeyB64;
             vault.friends[addr].keyChangedAt = Date.now();
           }
+          // Merge old keys delivered during friending
+          if (result.previousFeedKeys?.length) {
+            if (!vault.friends[addr].previousFeedKeys) vault.friends[addr].previousFeedKeys = [];
+            for (const oldKey of result.previousFeedKeys) {
+              if (oldKey !== result.feedKeyB64 && !vault.friends[addr].previousFeedKeys.includes(oldKey)) {
+                vault.friends[addr].previousFeedKeys.push(oldKey);
+              }
+            }
+          }
           vault.friends[addr].feedKeyB64 = result.feedKeyB64;
           vault.friends[addr].encPubKey = profile.encryptionPublicKey;
           vault.friends[addr].expired = false;
@@ -775,7 +786,7 @@ async function retryPendingKeyRotations() {
     }
     if (!encPubKey) { remaining.push(entry); continue; }
     try {
-      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, encPubKey, vault.displayName || null, vault.photoHash || null, vault.fullPhotoHash || null, window._currentUser);
+      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, encPubKey, vault.displayName || null, vault.photoHash || null, vault.fullPhotoHash || null, window._currentUser, vault?.previousFeedKeys);
       await api.request("/api/key-exchange", { method: "POST", body: JSON.stringify({ toUsername: friendHash, encryptedPayload: keyPayload }) });
       sentToHashes.add(friendHash);
     } catch { remaining.push(entry); }
@@ -802,7 +813,7 @@ async function processFriendAccepted() {
         const myDisplayName = vault.displayName || null;
         const myPhotoHash = vault.photoHash || null;
         const myFullPhotoHash = vault.fullPhotoHash || null;
-        const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser);
+        const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser, vault?.previousFeedKeys);
         await api.request("/api/key-exchange", { method: "POST", body: JSON.stringify({ toUsername: fromUsername, encryptedPayload: keyPayload }) });
         const addr = `${fromUsername}@${fromDomain}`;
         if (!vault.friends[addr]) vault.friends[addr] = {};
@@ -1572,7 +1583,7 @@ function FriendsView() {
       const [fromUsername, fromDomain] = (notif.from || "").split("@"); if (!fromUsername || !fromDomain) return;
       const fromEncPubKey = notif.fromKeys?.encryption; if (!fromEncPubKey || !identity) return;
       const myDisplayName = vault?.displayName || null; const myPhotoHash = vault?.photoHash || null; const myFullPhotoHash = vault?.fullPhotoHash || null;
-      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser);
+      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser, vault?.previousFeedKeys);
       await api.request("/api/friends/accept", { method: "POST", body: JSON.stringify({ from: notif.from, notificationId: notif.id, keyExchangePayload: keyPayload }) });
       await api.request("/api/key-exchange", { method: "POST", body: JSON.stringify({ toUsername: fromUsername, encryptedPayload: keyPayload }) });
       vault.friends[notif.from] = { encPubKey: fromEncPubKey, feedKeyB64: null }; await saveVault();
@@ -1595,7 +1606,7 @@ function FriendsView() {
         } catch {}
       }
       const myDisplayName = vault?.displayName || null; const myPhotoHash = vault?.photoHash || null; const myFullPhotoHash = vault?.fullPhotoHash || null;
-      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser);
+      const keyPayload = await encryptFeedKeyForFriend(identity.feedKeyB64, identity.encryption.privateKey, fromEncPubKey, myDisplayName, myPhotoHash, myFullPhotoHash, window._currentUser, vault?.previousFeedKeys);
       await api.request(`/api/friend-request/${req.id}/accept`, { method: "POST", body: JSON.stringify({ keyExchangePayload: keyPayload }) });
       // Look up the sender's profile by hash to get their username for key exchange
       try {
@@ -1796,6 +1807,9 @@ function DMView({ isMobile }) {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [selectedFriends, setSelectedFriends] = useState([]);
+  const [groupCreator, setGroupCreator] = useState(null);
+  const [showAddMembers, setShowAddMembers] = useState(false);
+  const [selectedNewMembers, setSelectedNewMembers] = useState([]);
   const [groupChatPhotos, setGroupChatPhotos] = useState([]);
   const [groupChatVideos, setGroupChatVideos] = useState([]);
   const [groupSendStatus, setGroupSendStatus] = useState("");
@@ -2013,7 +2027,7 @@ function DMView({ isMobile }) {
     // Try vault key first (creator's own key)
     try {
       const raw = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(keyIvB64) }, identity.vaultKey, fromB64(encryptedKeyB64));
-      return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+      return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
     } catch {}
     // Try ECDH with creator's public key (invited member)
     if (creatorUsername) {
@@ -2026,7 +2040,7 @@ function DMView({ isMobile }) {
         if (encPubKey) {
           const sharedKey = await deriveConversationKey(identity.encryption.privateKey, encPubKey);
           const raw = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(keyIvB64) }, sharedKey, fromB64(encryptedKeyB64));
-          return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+          return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
         }
       } catch {}
     }
@@ -2042,6 +2056,7 @@ function DMView({ isMobile }) {
 
   const openGroup = async (group) => {
     setActive(null); setActiveGroup(group.id); setGroupMessages([]); setLoading(true);
+    setGroupCreator(group.creator);
     const gKey = await decryptGroupKey(group.encryptedKey, group.keyIv, group.creator);
     if (!gKey) { setLoading(false); return; }
     setGroupKey(gKey);
@@ -2173,6 +2188,38 @@ function DMView({ isMobile }) {
       setGroups(data.groups || []);
       setShowCreateGroup(false); setNewGroupName(""); setSelectedFriends([]);
     } catch (err) { console.error("[group-create]", err); alert("Failed to create group: " + err.message); }
+  };
+
+  const addMembersToGroup = async () => {
+    if (selectedNewMembers.length === 0 || !activeGroup || !groupKey || !identity) return;
+    try {
+      const rawKeyBytes = new Uint8Array(await crypto.subtle.exportKey("raw", groupKey));
+      const members = [];
+      for (const friend of selectedNewMembers) {
+        const encPubKey = getEncPubKey(friend.username);
+        if (!encPubKey) continue;
+        const sharedKey = await deriveConversationKey(identity.encryption.privateKey, encPubKey);
+        const memberIv = crypto.getRandomValues(new Uint8Array(12));
+        const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv: memberIv }, sharedKey, rawKeyBytes);
+        members.push({ username: friend.username, encryptedKey: toB64(new Uint8Array(wrapped)), keyIv: toB64(memberIv) });
+      }
+      if (members.length === 0) { alert("Could not encrypt key for selected members."); return; }
+      await api.request(`/api/groups/${activeGroup}/members`, { method: "POST", body: JSON.stringify({ members }) });
+      const data = await api.request(`/api/groups/${activeGroup}`);
+      setGroupMembers(data.members || []);
+      setShowAddMembers(false); setSelectedNewMembers([]);
+    } catch (err) { console.error("[group-add-members]", err); alert("Failed to add members: " + err.message); }
+  };
+
+  const leaveGroup = async () => {
+    if (!activeGroup) return;
+    if (!confirm("Leave this group? You won't be able to rejoin unless the creator adds you back.")) return;
+    try {
+      await api.request(`/api/groups/${activeGroup}/leave`, { method: "POST" });
+      setActiveGroup(null); setGroupKey(null); setGroupMessages([]); setGroupMembers([]); setGroupName(""); setGroupCreator(null);
+      const data = await api.request("/api/groups");
+      setGroups(data.groups || []);
+    } catch (err) { console.error("[group-leave]", err); alert("Failed to leave group: " + err.message); }
   };
 
   const convPartners = new Set(conversations.map(c => c.partner));
@@ -2361,6 +2408,12 @@ function DMView({ isMobile }) {
           <div style={{ fontWeight: 600, color: T.text, fontSize: 14 }}>{groupName}</div>
           <div style={{ color: T.textDim, fontSize: 11 }}>{groupMembers.length} members · 🔒 E2E</div>
         </div>
+        {(groupCreator === currentUser || groupCreator === identity?.usernameHash) && (
+          <Btn small onClick={() => { setSelectedNewMembers([]); setShowAddMembers(true); }} style={{ fontSize: 12 }}>+ Add</Btn>
+        )}
+        {groupCreator !== currentUser && groupCreator !== identity?.usernameHash && (
+          <Btn variant="ghost" small onClick={leaveGroup} style={{ fontSize: 12, color: T.danger }}>Leave</Btn>
+        )}
       </div>
       <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? 12 : 20, display: "flex", flexDirection: "column", gap: 8 }}>
         {loading && <div style={{ color: T.textDim, fontSize: 13, textAlign: "center", padding: 20 }}>Loading messages...</div>}
@@ -2455,9 +2508,44 @@ function DMView({ isMobile }) {
     </div>
   ) : null;
 
+  const existingMemberUsernames = new Set(groupMembers.map(m => m.username));
+  const addableFriends = allFriends.filter(f => !existingMemberUsernames.has(f.username));
+  const addMembersModal = showAddMembers ? (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }} onClick={() => setShowAddMembers(false)}>
+      <div onClick={e => e.stopPropagation()} style={{ background: T.bgCard, borderRadius: 16, padding: 24, maxWidth: 400, width: "100%", maxHeight: "80vh", overflowY: "auto", border: `1px solid ${T.border}` }}>
+        <h3 style={{ margin: "0 0 16px", color: T.text, fontSize: 18 }}>Add Members</h3>
+        <div style={{ color: T.textDim, fontSize: 12, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Select friends to add</div>
+        <div style={{ maxHeight: 250, overflowY: "auto", marginBottom: 16 }}>
+          {addableFriends.map(f => {
+            const selected = selectedNewMembers.some(s => s.username === f.username);
+            return (
+              <div key={f.username} onClick={() => {
+                if (selected) setSelectedNewMembers(prev => prev.filter(s => s.username !== f.username));
+                else setSelectedNewMembers(prev => [...prev, f]);
+              }} style={{ padding: "10px 12px", display: "flex", gap: 10, alignItems: "center", cursor: "pointer", borderRadius: 8, background: selected ? T.accentDim : "transparent", marginBottom: 2 }}>
+                <Avatar username={f.username} size={28} domain={f.domain} />
+                <div style={{ flex: 1, color: T.text, fontSize: 13 }}>{getDisplayName(f.username)}</div>
+                <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${selected ? T.accent : T.border}`, background: selected ? T.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12 }}>
+                  {selected && "✓"}
+                </div>
+              </div>
+            );
+          })}
+          {addableFriends.length === 0 && <div style={{ color: T.textDim, fontSize: 13, textAlign: "center", padding: 20 }}>All your friends are already in this group</div>}
+        </div>
+        {selectedNewMembers.length > 0 && <div style={{ color: T.textDim, fontSize: 12, marginBottom: 12 }}>{selectedNewMembers.length} friend{selectedNewMembers.length !== 1 ? "s" : ""} selected</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Btn small onClick={() => { setShowAddMembers(false); setSelectedNewMembers([]); }} style={{ background: T.bgHover, color: T.text }}>Cancel</Btn>
+          <Btn small onClick={addMembersToGroup} disabled={selectedNewMembers.length === 0}>Add Members</Btn>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   if (isMobile) {
     return (<>
       {createGroupModal}
+      {addMembersModal}
       <div style={{ background: T.border, borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}` }}>
         {showConvList && convListPanel}
         {showChat && active && chatPanel}
@@ -2468,6 +2556,7 @@ function DMView({ isMobile }) {
 
   return (<>
     {createGroupModal}
+    {addMembersModal}
     <div style={{ display: "flex", height: "calc(100vh - 120px)", gap: 1, background: T.border, borderRadius: 12, overflow: "hidden", border: `1px solid ${T.border}` }}>
       {convListPanel}
       {active ? chatPanel : activeGroup ? groupChatPanel : chatPanel}
@@ -2648,7 +2737,7 @@ function SettingsView() {
         if (!encPubKey) { failed.push(addr); continue; }
         try {
           const toUsername = friendHash;
-          const keyPayload = await encryptFeedKeyForFriend(newKeys.feedKeyB64, newKeys.encryption.privateKey, encPubKey, vault.displayName || null, vault.photoHash || null, vault.fullPhotoHash || null, window._currentUser);
+          const keyPayload = await encryptFeedKeyForFriend(newKeys.feedKeyB64, newKeys.encryption.privateKey, encPubKey, vault.displayName || null, vault.photoHash || null, vault.fullPhotoHash || null, window._currentUser, vault.previousFeedKeys);
           await api.request("/api/key-exchange", { method: "POST", body: JSON.stringify({ toUsername, encryptedPayload: keyPayload }) });
           sentToHashes.add(friendHash);
           sent++;
