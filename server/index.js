@@ -839,6 +839,18 @@ async function main() {
     } catch (err) { res.status(500).json({ error: 'Failed' }) }
   })
 
+  // Leave group
+  app.post('/api/groups/:id/leave', requireAuth, async (req, res) => {
+    try {
+      const group = await userStore.getGroupChat(req.params.id)
+      if (!group) return res.status(404).json({ error: 'Group not found' })
+      if (!await userStore.isGroupMember(req.params.id, req.user.username)) return res.status(403).json({ error: 'Not a member' })
+      if (group.creator === req.user.username) return res.status(400).json({ error: 'Creator cannot leave the group' })
+      await userStore.removeGroupMember(req.params.id, req.user.username)
+      res.json({ ok: true })
+    } catch (err) { res.status(500).json({ error: 'Failed' }) }
+  })
+
   // Send message to group
   app.post('/api/groups/:id/messages', requireAuth, async (req, res) => {
     try {
